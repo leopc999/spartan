@@ -68,119 +68,214 @@ enum{PKEEP,PINSERT,PDONE,PDISCARD,PENTRY,PEXIT,PSURF};  // several files
 /* ---------------------------------------------------------------------- */
 
 FixAblate::FixAblate(SPARTA *sparta, int narg, char **arg) :
-  Fix(sparta, narg, arg)
+  Fix(sparta, narg, arg),
+  nmap(0),
+  map_isc_id(NULL),
+  map_isr_id(NULL),
+  map_source_str(NULL),
+  map_group_bit(NULL),
+  map_isc_idx(NULL),
+  map_isr_idx(NULL),
+  map_source_which(NULL),
+  map_source_idsource(NULL),
+  map_source_argindex(NULL),
+  map_source_maxrandom(NULL),
+  map_source_ptr(NULL),
+  map_source_ivariable(NULL)
 {
   MPI_Comm_rank(world,&me);
 
   if (narg < 6) error->all(FLERR,"Illegal fix ablate command");
 
-  igroup = grid->find_group(arg[2]);
-  if (igroup < 0) error->all(FLERR,"Could not find fix ablate group ID");
-  groupbit = grid->bitmask[igroup];
+  // --- 首先，检查 "map" 关键字是否存在 ---
+  int map_arg_location = -1;
+  for (int i = 5; i < narg; i++) {
+    if (strcmp(arg[i], "map") == 0) {
+      if (i + 1 < narg && strcmp(arg[i+1], "groups") == 0) {
+        map_arg_location = i;
+        break;
+      }
+    }
+  }
 
-  nevery = atoi(arg[3]);
-  if (nevery < 0) error->all(FLERR,"Illegal fix ablate command");
+  // --- 分支逻辑开始 ---
 
-  idsource = NULL;
+  if (map_arg_location != -1) {
+    //
+    // ****** 分支 A: 如果 "map groups" 关键字存在 ******
+    //
 
-  scale = atof(arg[4]);
-  if (scale < 0.0) error->all(FLERR,"Illegal fix ablate command");
+    // 1. 解析 map 之前的基础参数 (ID, ablate, group, Nevery, scale)
+    igroup = grid->find_group(arg[2]);
+    if (igroup < 0) error->all(FLERR, "Could not find fix ablate group ID");
+    groupbit = grid->bitmask[igroup];
+    nevery = atoi(arg[3]);
+    if (nevery < 0) error->all(FLERR, "Illegal fix ablate command");
+    scale = atof(arg[4]);
+    if (scale < 0.0) error->all(FLERR, "Illegal fix ablate command");
 
-  int iarg = 6;
+    // 2. 解析 map 关键字本身和它的参数
+    int iarg = map_arg_location + 2; // 从 "map groups" 之后开始
+    if (iarg >= narg) error->all(FLERR, "Illegal fix ablate command with map groups keyword");
 
-  if ((strncmp(arg[5],"c_",2) == 0) || (strncmp(arg[5],"f_",2) == 0)) {
-    if (arg[5][0] == 'c') which = COMPUTE;
-    else if (arg[5][0] == 'f') which = FIX;
-
-    int n = strlen(arg[5]);
-    char *suffix = new char[n];
-    strcpy(suffix,&arg[5][2]);
-
-    char *ptr = strchr(suffix,'[');
-    if (ptr) {
-      if (suffix[strlen(suffix)-1] != ']')
-        error->all(FLERR,"Illegal fix ablate command");
-      argindex = atoi(ptr+1);
-      *ptr = '\0';
-    } else argindex = 0;
-
-    n = strlen(suffix) + 1;
-    idsource = new char[n];
-    strcpy(idsource,suffix);
-    delete [] suffix;
-
-  } else if (strncmp(arg[5],"v_",2) == 0) {
-    which = VARIABLE;
-
-    int n = strlen(arg[5]);
-    char *idsource = new char[n];
-    strcpy(idsource,&arg[5][2]);
-
-  } else if (strcmp(arg[5],"random") == 0) {
+    nmap = atoi(arg[iarg]);
+    if (nmap <= 0) error->all(FLERR, "Invalid N in fix ablate map groups");
     iarg++;
 
-    if (narg < 7) error->all(FLERR,"Illegal fix ablate command");
-    which = RANDOM;
-    maxrandom = atoi(arg[6]);
+    // 3. 分配内存
+    // -- A. 为从脚本直接读取的原始信息分配内存 --
+    memory->create(map_isc_id, nmap, "ablate:map_isc_id");
+    memory->create(map_isr_id, nmap, "ablate:map_isr_id");
+    map_source_str = new char*[nmap];
 
-  } else if (strcmp(arg[5],"uniform") == 0) {
-    iarg++; // one additional input
-    if (narg < 7) error->all(FLERR,"Illegal fix ablate command");
-    which = UNIFORM;
-    maxrandom = atoi(arg[6]);
+    // -- B. 为后续在 init() 中解析得到的数据分配内存 --
+    //    这些数组将在构造函数执行后，但在模拟运行前被填充
+    memory->create(map_group_bit, nmap, "ablate:map_group_bit");
+    memory->create(map_isc_idx, nmap, "ablate:map_isc_idx");
+    memory->create(map_isr_idx, nmap, "ablate:map_isr_idx");
+    memory->create(map_source_which, nmap, "ablate:map_which");
+    map_source_idsource = new char*[nmap];
+    memory->create(map_source_argindex, nmap, "ablate:map_argindex");
+    memory->create(map_source_maxrandom, nmap, "ablate:map_maxrandom");
 
-  } else error->all(FLERR,"Illegal fix ablate command");
+    // 4. 循环解析每一个映射条目
+    for (int i = 0; i < nmap; i++) {
 
-  // process optional command line args
+      // 检查是否还有足够的参数用于下一个条目
+      if (iarg + 4 > narg) error->all(FLERR, "Incomplete map entry for fix ablate");
 
-  process_args(narg-iarg,&arg[iarg]);
+      // --- 解析 Group ID (字符串) ---
+      char *group_name = arg[iarg];
+      int g_idx = grid->find_group(group_name);
+      if (g_idx < 0) {
+        char msg[128];
+        sprintf(msg, "Grid group ID '%s' in fix ablate map not found", group_name);
+        error->all(FLERR, msg);
+      }
+      map_group_bit[i] = grid->bitmask[g_idx];
+      iarg++;
 
-  // error check
+      // --- 解析 Collision Model ID (整数) ---
+      map_isc_id[i] = atoi(arg[iarg++]);
 
-  if (which == COMPUTE) {
-    icompute = modify->find_compute(idsource);
-    if (icompute < 0)
-      error->all(FLERR,"Compute ID for fix ablate does not exist");
-    if (modify->compute[icompute]->per_grid_flag == 0)
-      error->all(FLERR,
-                 "Fix ablate compute does not calculate per-grid values");
-    if (modify->compute[icompute]->post_process_isurf_grid_flag == 0)
-      error->all(FLERR,
-                 "Fix ablate compute does not calculate isurf per-grid values");
-    if (argindex == 0 &&
-        modify->compute[icompute]->size_per_grid_cols != 0)
-      error->all(FLERR,"Fix ablate compute does not "
-                 "calculate per-grid vector");
-    if (argindex && modify->compute[icompute]->size_per_grid_cols == 0)
-      error->all(FLERR,"Fix ablate compute does not "
-                 "calculate per-grid array");
-    if (argindex && argindex > modify->compute[icompute]->size_per_grid_cols)
-      error->all(FLERR,"Fix ablate compute array is accessed out-of-range");
+      // --- 解析 Reaction Model ID (整数 或 "none") ---
+      if (strcmp(arg[iarg], "none") == 0) {
+        map_isr_id[i] = -1;
+        iarg++;
+      } else {
+        map_isr_id[i] = atoi(arg[iarg++]);
+      }
 
-  } else if (which == FIX) {
-    ifix = modify->find_fix(idsource);
-    if (ifix < 0)
-      error->all(FLERR,"Fix ID for fix ablate does not exist");
-    if (modify->fix[ifix]->per_grid_flag == 0)
-      error->all(FLERR,"Fix ablate fix does not calculate per-grid values");
-    if (argindex == 0 && modify->fix[ifix]->size_per_grid_cols != 0)
-      error->all(FLERR,
-                 "Fix ablate fix does not calculate per-grid vector");
-    if (argindex && modify->fix[ifix]->size_per_grid_cols == 0)
-      error->all(FLERR,
-                 "Fix ablate fix does not calculate per-grid array");
-    if (argindex && argindex > modify->fix[ifix]->size_per_grid_cols)
-      error->all(FLERR,"Fix ablate fix array is accessed out-of-range");
-    if (nevery % modify->fix[ifix]->per_grid_freq)
-      error->all(FLERR,
-                 "Fix for fix ablate not computed at compatible time");
+      // --- 调用辅助函数来解析复杂的源项 ---
+      // 传递当前及之后的所有参数给辅助函数
+      int extra_args_consumed = parse_source_string(narg - iarg, &arg[iarg],
+                                                    map_source_which[i],
+                                                    map_source_idsource[i],
+                                                    map_source_argindex[i],
+                                                    map_source_maxrandom[i]);
 
-  } else if (which == VARIABLE) {
-    ivariable = input->variable->find(idsource);
-    if (ivariable < 0)
-      error->all(FLERR,"Could not find fix ablate variable name");
-    if (input->variable->grid_style(ivariable) == 0)
-      error->all(FLERR,"Fix ablate variable is not grid-style variable");
+      // 根据辅助函数的返回值，正确地推进参数指针
+      // 推进1个位置 (源项关键字本身) + 辅助函数消耗的额外参数
+      iarg += 1 + extra_args_consumed;
+    }
+
+    // 5. Convert isc/isr IDs to internal indexes
+    for (int i = 0; i < nmap; i++) {
+      char id_str[32];
+      sprintf(id_str, "%d", map_isc_id[i]);
+      map_isc_idx[i] = surf->find_collide(id_str);
+      if (map_isc_idx[i] < 0) {
+        char msg[128];
+        sprintf(msg, "Collision ID '%s' in fix ablate map not found", id_str);
+        error->all(FLERR, msg);
+      }
+      if (map_isr_id[i] != -1) {
+        sprintf(id_str, "%d", map_isr_id[i]);
+        map_isr_idx[i] = surf->find_react(id_str);
+        if (map_isr_idx[i] < 0) {
+          char msg[128];
+          sprintf(msg, "Reaction ID '%s' in fix ablate map not found", id_str);
+          error->all(FLERR, msg);
+        }
+      } else {
+        map_isr_idx[i] = -1;
+      }
+    }
+
+    // 6. 解析 map 之后的可选参数 (如 mindist, multiple)
+    process_args(narg-iarg, &arg[iarg]);
+
+  } else {
+    //
+    // ****** 分支 B: 如果 "map" 关键字不存在 ******
+    //
+    // 在这里，我们粘贴原始构造函数的完整解析逻辑，保持其行为不变
+
+    igroup = grid->find_group(arg[2]);
+    if (igroup < 0) error->all(FLERR,"Could not find fix ablate group ID");
+    groupbit = grid->bitmask[igroup];
+
+    nevery = atoi(arg[3]);
+    if (nevery < 0) error->all(FLERR,"Illegal fix ablate command");
+
+    scale = atof(arg[4]);
+    if (scale < 0.0) error->all(FLERR,"Illegal fix ablate command");
+
+    // 调用辅助函数解析单个源项
+    int extra_args = parse_source_string(narg-5, &arg[5], which, idsource, argindex, maxrandom);
+    int iarg = 6 + extra_args;
+
+    // process optional command line args
+    process_args(narg-iarg, &arg[iarg]);
+
+    // 原始的错误检查
+    // error check
+
+    if (which == COMPUTE) {
+      icompute = modify->find_compute(idsource);
+      if (icompute < 0)
+        error->all(FLERR,"Compute ID for fix ablate does not exist");
+      if (modify->compute[icompute]->per_grid_flag == 0)
+        error->all(FLERR,
+                   "Fix ablate compute does not calculate per-grid values");
+      if (modify->compute[icompute]->post_process_isurf_grid_flag == 0)
+        error->all(FLERR,
+                   "Fix ablate compute does not calculate isurf per-grid values");
+      if (argindex == 0 &&
+          modify->compute[icompute]->size_per_grid_cols != 0)
+        error->all(FLERR,"Fix ablate compute does not "
+                   "calculate per-grid vector");
+      if (argindex && modify->compute[icompute]->size_per_grid_cols == 0)
+        error->all(FLERR,"Fix ablate compute does not "
+                   "calculate per-grid array");
+      if (argindex && argindex > modify->compute[icompute]->size_per_grid_cols)
+        error->all(FLERR,"Fix ablate compute array is accessed out-of-range");
+
+    } else if (which == FIX) {
+      ifix = modify->find_fix(idsource);
+      if (ifix < 0)
+        error->all(FLERR,"Fix ID for fix ablate does not exist");
+      if (modify->fix[ifix]->per_grid_flag == 0)
+        error->all(FLERR,"Fix ablate fix does not calculate per-grid values");
+      if (argindex == 0 && modify->fix[ifix]->size_per_grid_cols != 0)
+        error->all(FLERR,
+                   "Fix ablate fix does not calculate per-grid vector");
+      if (argindex && modify->fix[ifix]->size_per_grid_cols == 0)
+        error->all(FLERR,
+                   "Fix ablate fix does not calculate per-grid array");
+      if (argindex && argindex > modify->fix[ifix]->size_per_grid_cols)
+        error->all(FLERR,"Fix ablate fix array is accessed out-of-range");
+      if (nevery % modify->fix[ifix]->per_grid_freq)
+        error->all(FLERR,
+                   "Fix for fix ablate not computed at compatible time");
+
+    } else if (which == VARIABLE) {
+      ivariable = input->variable->find(idsource);
+      if (ivariable < 0)
+        error->all(FLERR,"Could not find fix ablate variable name");
+      if (input->variable->grid_style(ivariable) == 0)
+        error->all(FLERR,"Fix ablate variable is not grid-style variable");
+    }
   }
 
   // this fix produces a per-grid array and a scalar
@@ -336,8 +431,14 @@ void FixAblate::store_corners(int nx_caller, int ny_caller, int nz_caller,
   xyzsize[2] = xyzsize_caller[2];
   thresh = thresh_caller;
 
+  // 1. 检查调用者 (create_isurf) 是否提供了有效的 tvalues
   tvalues_flag = 0;
   if (tvalues_caller) tvalues_flag = 1;
+  // 2. 如果我们需要 tvalues (因为文件提供了，或者因为我们开启了map)，
+  //    则确保 tvalues_flag 为1，以便 grow_percell 分配内存。
+  if (tvalues_flag || nmap > 0) {
+    tvalues_flag = 1;
+  }
 
   if (sgroupID) {
     int sgroup = surf->find_group(sgroupID);
@@ -351,6 +452,8 @@ void FixAblate::store_corners(int nx_caller, int ny_caller, int nz_caller,
   Grid::ChildInfo *cinfo = grid->cinfo;
   nglocal = grid->nlocal;
 
+  // 3. 分配所有需要的 per-cell 内存。
+  //    如果 tvalues_flag 为1, tvalues 数组会在这里被正确创建。
   grow_percell(0);
 
   // copy caller values into local values of FixAblate
@@ -384,6 +487,15 @@ void FixAblate::store_corners(int nx_caller, int ny_caller, int nz_caller,
     }
   }
 
+  // 4. 根据 tvalues_caller 是否存在，决定如何填充 tvalues 数组
+  if (tvalues_caller) {
+    // 如果 create_isurf 提供了 tvalues，则优先使用它们
+    for (int icell = 0; icell < nglocal; icell++)
+      tvalues[icell] = tvalues_caller[icell];
+  } else {
+    // 否则 (tvalues_caller 为 NULL)，执行我们基于 grid group 的智能分配逻辑
+    correct_tvalues_by_group();
+  }
   // set ix,iy,iz indices from 1 to Nxyz for each of my owned grid cells
   // same logic as ReadIsurf::create_hash()
 
@@ -426,25 +538,138 @@ void FixAblate::store_corners(int nx_caller, int ny_caller, int nz_caller,
   create_surfs(1);
 }
 
+/* ----------------------------------------------------------------------
+   辅助函数: 解析单个源项字符串 (e.g., "c_10[2]", "uniform 0")
+   返回: 消耗的额外参数数量 (例如 uniform 后面跟一个数字，所以返回1)
+------------------------------------------------------------------------- */
+int FixAblate::parse_source_string(int narg, char **arg, int &which, char *&idsource,
+                                   int &argindex, int &maxrandom)
+{
+  if (narg < 1) error->all(FLERR,"Invalid source arguments to parse");
+
+  // 默认为无额外参数消耗
+  int extra_args_consumed = 0;
+  char *source_arg = arg[0];
+
+  if ((strncmp(source_arg, "c_", 2) == 0) || (strncmp(source_arg, "f_", 2) == 0)) {
+    if (source_arg[0] == 'c') which = COMPUTE;
+    else if (source_arg[0] == 'f') which = FIX;
+
+    int n = strlen(source_arg);
+    char *suffix = new char[n];
+    strcpy(suffix, &source_arg[2]);
+
+    char *ptr = strchr(suffix, '[');
+    if (ptr) {
+      if (suffix[strlen(suffix) - 1] != ']')
+        error->all(FLERR, "Illegal fix ablate command");
+      argindex = atoi(ptr + 1);
+      *ptr = '\0';
+    } else argindex = 0;
+
+    n = strlen(suffix) + 1;
+    idsource = new char[n];
+    strcpy(idsource, suffix);
+    delete[] suffix;
+
+  } else if (strncmp(source_arg, "v_", 2) == 0) {
+    which = VARIABLE;
+    int n = strlen(source_arg);
+    idsource = new char[n];
+    strcpy(idsource, &source_arg[2]);
+
+  } else if (strcmp(source_arg, "random") == 0) {
+    if (narg < 2) error->all(FLERR, "Missing maxrandom for random source");
+    which = RANDOM;
+    maxrandom = atoi(arg[1]);
+    extra_args_consumed = 1;
+
+  } else if (strcmp(source_arg, "uniform") == 0) {
+    if (narg < 2) error->all(FLERR, "Missing maxrandom for uniform source");
+    which = UNIFORM;
+    maxrandom = atoi(arg[1]);
+    extra_args_consumed = 1;
+
+  } else error->all(FLERR, "Illegal source type in fix ablate");
+
+  return extra_args_consumed;
+}
+
 /* ---------------------------------------------------------------------- */
 
 void FixAblate::init()
 {
+  // 检查 corner point 值是否已通过 create_isurf/read_isurf 存储
   if (!storeflag)
     error->all(FLERR,"Fix ablate corner point values not stored");
 
-  if (which == COMPUTE) {
-    icompute = modify->find_compute(idsource);
-    if (icompute < 0)
-      error->all(FLERR,"Compute ID for fix ablate does not exist");
-  } else if (which == FIX) {
-    ifix = modify->find_fix(idsource);
-    if (ifix < 0)
-      error->all(FLERR,"Fix ID for fix ablate does not exist");
-  } else if (which == VARIABLE) {
-    ivariable = input->variable->find(idsource);
-    if (ivariable < 0)
-      error->all(FLERR,"Variable ID for fix ablate does not exist");
+  // ==================== 逻辑分支开始 ====================
+  if (nmap > 0) {
+    //
+    // ****** 分支 A: 如果用户使用了 "map" 关键字 ******
+    //
+
+    // 1. 为指针数组分配内存
+    map_source_ptr = new void *[nmap];
+    memory->create(map_source_ivariable, nmap, "ablate:map_ivariable");
+
+    // 2. 循环检查 map 中的每一个源项，解析源
+    for (int i = 0; i < nmap; i++) {
+      map_source_ptr[i] = NULL;
+      map_source_ivariable[i] = -1;
+
+      if (map_source_which[i] == COMPUTE) {
+        int ic = modify->find_compute(map_source_idsource[i]);
+        if (ic < 0) {
+          char msg[256];
+          sprintf(msg, "Compute ID '%s' in fix ablate map not found", map_source_idsource[i]);
+          error->all(FLERR, msg);
+        }
+        if (modify->compute[ic]->per_grid_flag == 0)
+          error->all(FLERR, "Compute in fix ablate map does not calculate per-grid values");
+        // ... (可以根据需要添加更多来自原始构造函数的详细检查)
+        map_source_ptr[i] = modify->compute[ic];
+      } else if (map_source_which[i] == FIX) {
+        int f = modify->find_fix(map_source_idsource[i]);
+        if (f < 0) {
+          char msg[256];
+          sprintf(msg, "Fix ID '%s' in fix ablate map not found", map_source_idsource[i]);
+          error->all(FLERR, msg);
+        }
+        if (modify->fix[f]->per_grid_flag == 0)
+          error->all(FLERR, "Fix in fix ablate map does not calculate per-grid values");
+        // ... (可以根据需要添加更多详细检查)
+        map_source_ptr[i] = modify->fix[f];
+      } else if (map_source_which[i] == VARIABLE) {
+        int iv = input->variable->find(map_source_idsource[i]);
+        if (iv < 0) {
+          char msg[256];
+          sprintf(msg, "Variable ID '%s' in fix ablate map not found", map_source_idsource[i]);
+          error->all(FLERR, msg);
+        }
+        if (input->variable->grid_style(iv) == 0)
+          error->all(FLERR, "Variable in fix ablate map is not grid-style");
+        map_source_ivariable[i] = iv;
+      }
+    }
+    // UNIFORM 和 RANDOM 源不需要在这里解析
+  } else {
+    //
+    // ****** 分支 B: 原始的单一源检查逻辑 ******
+    //
+    if (which == COMPUTE) {
+      icompute = modify->find_compute(idsource);
+      if (icompute < 0)
+        error->all(FLERR, "Compute ID for fix ablate does not exist");
+    } else if (which == FIX) {
+      ifix = modify->find_fix(idsource);
+      if (ifix < 0)
+        error->all(FLERR, "Fix ID for fix ablate does not exist");
+    } else if (which == VARIABLE) {
+      ivariable = input->variable->find(idsource);
+      if (ivariable < 0)
+        error->all(FLERR, "Variable ID for fix ablate does not exist");
+    }
   }
 
   // reallocate per-grid data if necessary
@@ -453,15 +678,51 @@ void FixAblate::init()
   grow_percell(0);
 }
 
+/* ----------------------------------------------------------------------
+   新的辅助函数：根据 Grid Group 成员关系，修正 tvalues 数组
+------------------------------------------------------------------------- */
+void FixAblate::correct_tvalues_by_group()
+{
+  // 如果未使用 map 功能，则无需执行
+  if (nmap <= 0) return;
+
+  Grid::ChildInfo *cinfo = grid->cinfo;
+
+  // 遍历所有网格单元，根据其所属的 group，修正其 tvalue
+  for (int icell = 0; icell < nglocal; icell++) {
+    bool assigned = false;
+    for (int j = 0; j < nmap; j++) {
+      if (cinfo[icell].mask & map_group_bit[j]) {
+        // 将规则的序号(j+1)作为 type 值
+        this->tvalues[icell] = j + 1;
+        assigned = true;
+        break;
+      }
+    }
+    if (!assigned) this->tvalues[icell] = 1; // 0 代表默认/无规则
+  }
+}
+
 /* ---------------------------------------------------------------------- */
 
 void FixAblate::end_of_step()
 {
-  // set per-cell delta vector randomly or from compute/fix source
+  // 在重建表面之前，调用辅助函数修正 tvalues
+  correct_tvalues_by_group();
+  // =========================================================================
 
-  if (which == RANDOM) set_delta_random();
-  else if (which == UNIFORM) set_delta_uniform();
-  else set_delta();
+  // 根据是否使用 map，调用不同的函数来计算烧蚀量
+  if (nmap > 0) {
+    // 如果用户定义了 map，则调用为 map 模式设计的专属函数
+    set_delta_mapped();
+  } else {
+    // 否则，执行原始的、单一源的逻辑
+    // set per-cell delta vector randomly or from compute/fix source
+
+    if (which == RANDOM) set_delta_random();
+    else if (which == UNIFORM) set_delta_uniform();
+    else set_delta();
+  }
 
   // various decrement and sync routines depending on:
   // 1) are multivalues used?
@@ -592,25 +853,63 @@ void FixAblate::create_surfs(int outflag)
   // for now just assume all surfs are assigned to first collide/react model
   // NOTE: need a more flexible way to do this
 
+  // ==================== 新的、基于 MAP 的属性赋值逻辑 ====================
+
   int nslocal = surf->nlocal;
 
-  if (dim == 2) {
-    Surf::Line *lines = surf->lines;
-    if (surf->nsc)
-      for (int i = 0; i < nslocal; i++)
-        lines[i].isc = 0;
-    if (surf->nsr)
-      for (int i = 0; i < nslocal; i++)
-        lines[i].isr = 0;
+  if (nmap > 0) {
+    //
+    // ****** 分支 A: 如果用户在命令中定义了 map ******
+    //
+    if (dim == 3) {
+      Surf::Tri *tris = surf->tris;
+      for (int i = 0; i < nslocal; i++) {
+        int rule_index = tris[i].type;
+
+        if (rule_index > 0) {
+          int map_idx = rule_index - 1; // 转换为数组索引
+          tris[i].isc = map_isc_idx[map_idx];
+          tris[i].isr = map_isr_idx[map_idx];
+        } else {
+          // 为不属于任何 group 的表面设置安全的默认值
+          tris[i].isc = -1;
+          tris[i].isr = -1;
+        }
+      }
+    } else {
+      // 为 2D 情况添加类似的逻辑
+      Surf::Line *lines = surf->lines;
+      for (int i = 0; i < nslocal; i++) {
+        int rule_index = lines[i].type;
+
+        if (rule_index > 0) {
+          int map_idx = rule_index - 1; // 转换为数组索引
+          lines[i].isc = map_isc_idx[map_idx];
+          lines[i].isr = map_isr_idx[map_idx];
+        } else {
+          // 为不属于任何 group 的线设置安全的默认值
+          lines[i].isc = -1;
+          lines[i].isr = -1;
+        }
+      }
+    }
   } else {
-    Surf::Tri *tris = surf->tris;
-    if (surf->nsc)
-      for (int i = 0; i < nslocal; i++)
-        tris[i].isc = 0;
-    if (surf->nsr)
-      for (int i = 0; i < nslocal; i++)
-        tris[i].isr = 0;
+    //
+    // ****** 分支 B: 如果用户未使用 map, 执行原始的单一模型逻辑 ******
+    //
+    if (dim == 2) {
+      Surf::Line *lines = surf->lines;
+      if (surf->nsc) for (int i = 0; i < nslocal; i++) lines[i].isc = 0;
+      // 注意：这里不再默认设置 isr=0，因为这正是问题的根源
+      // if (surf->nsr) for (int i = 0; i < nslocal; i++) lines[i].isr = 0;
+    } else {
+      Surf::Tri *tris = surf->tris;
+      if (surf->nsc) for (int i = 0; i < nslocal; i++) tris[i].isc = 0;
+      // if (surf->nsr) for (int i = 0; i < nslocal; i++) tris[i].isr = 0;
+    }
   }
+
+  // ==================== 属性赋值逻辑结束 ====================
 
   // watertight check can be done before surfs are mapped to grid cells
 
@@ -774,6 +1073,128 @@ void FixAblate::create_surfs(int outflag)
 
   particle->nlocal = pnlocal;
   particle->sorted = 0;
+}
+
+/* ----------------------------------------------------------------------
+   set per-cell delta vector from mapped compute/fix/variable source
+   新的辅助函数: 在 MAP 模式下，根据 tvalue 表面类型为每个单元格设置烧蚀量
+--------------------------------------------------------------------------- */
+void FixAblate::set_delta_mapped()
+{
+  Grid::ChildCell *cells = grid->cells;
+  Grid::ChildInfo *cinfo = grid->cinfo;
+  double prefactor = nevery * scale;
+
+  // ==================== 1. 预计算阶段 ====================
+
+  // 清理并准备 compute 调用，确保它们在需要时能被重新计算
+  modify->clearstep_compute();
+
+  // 为每种在 map 中出现的 COMPUTE 和 VARIABLE 源，预先计算它们的 per-grid 值
+  for (int j = 0; j < nmap; j++) {
+    if (map_source_which[j] == COMPUTE) {
+      Compute *c = (Compute *) map_source_ptr[j];
+      if (!(c->invoked_flag & INVOKED_PER_GRID)) {
+        c->compute_per_grid();
+        c->invoked_flag |= INVOKED_PER_GRID;
+      }
+      c->post_process_isurf_grid();
+    } else if (map_source_which[j] == VARIABLE) {
+      if (nglocal > maxvar) {
+        maxvar = grid->maxlocal;
+        memory->destroy(vbuf);
+        memory->create(vbuf, maxvar, "ablate:vbuf");
+      }
+      // 注意：这里假设同一时间步中只有一个 variable 源被激活。
+      // 如果映射中包含多个不同的 variable 源，需要更复杂的 vbuf 管理。
+      input->variable->compute_grid(map_source_ivariable[j], vbuf, 1, 0);
+    }
+  }
+
+  // 为 RANDOM 源预先生成所有格点的随机烧蚀量，以保证跨处理器的一致性
+  double *random_deltas = NULL;
+  bool random_used = false;
+  for (int j=0; j<nmap; j++) if(map_source_which[j] == RANDOM) random_used = true;
+  if (random_used) {
+    memory->create(random_deltas, grid->ncell + 1, "ablate:random_deltas");
+    if (!grid->hashfilled) grid->rehash();
+    for (int i = 0; i < grid->ncell; i++) {
+        // 假设所有 random 源共享 fix 的全局 scale 和 map 中的 maxrandom
+        // 这里以第一个找到的 random 源的 maxrandom 为例
+        int current_max_random = 0;
+        for(int j=0; j<nmap; j++) {
+            if(map_source_which[j] == RANDOM) {
+                current_max_random = map_source_maxrandom[j];
+                break;
+            }
+        }
+        if (random->uniform() > scale) random_deltas[i+1] = 0.0;
+        else random_deltas[i+1] = static_cast<int>(random->uniform() * current_max_random) + 1.0;
+    }
+  }
+
+  // ==================== 2. 分配阶段 ====================
+
+  for (int icell = 0; icell < nglocal; icell++) {
+    celldelta[icell] = 0.0; // 默认烧蚀量为0
+
+    if (!(cinfo[icell].mask & groupbit) || cells[icell].nsplit <= 0) continue;
+
+    // 获取我们刚刚修正过的 tvalue (现在它代表了 map 规则的索引)
+    int rule_index = this->tvalues[icell];
+
+    // 如果 tvalue > 0 (0为默认值)，说明它匹配了 map 中的一条规则
+    if (rule_index > 0) {
+      int map_idx = rule_index - 1; // 转换为数组索引 (0-based)
+      int which_source = map_source_which[map_idx];
+
+      if (which_source == UNIFORM) {
+        // --- uniform 源的逻辑 (包含 multi_val_flag 判断) ---
+        int nin = 0;
+        for (int i = 0; i < ncorner; i++) {
+          if (multi_val_flag) {
+            if (mvalues[icell][i][0] > thresh) nin++;
+          } else {
+            if (cvalues[icell][i] > thresh) nin++;
+          }
+        }
+        if (nin > 0 && nin < ncorner)
+          celldelta[icell] = map_source_maxrandom[map_idx] * scale;
+
+      } else if (which_source == RANDOM) {
+        // --- random 源的逻辑 ---
+        celldelta[icell] = random_deltas[cells[icell].id];
+
+      } else if (which_source == COMPUTE) {
+        // --- compute 源的逻辑 ---
+        Compute *c = (Compute *) map_source_ptr[map_idx];
+        // 假设 compute 产生 array 类型的结果
+        double **carray = c->array_grid;
+        int im1 = map_source_argindex[map_idx] - 1;
+        celldelta[icell] = prefactor * carray[icell][im1];
+
+      } else if (which_source == VARIABLE) {
+        // --- variable 源的逻辑 ---
+        celldelta[icell] = prefactor * vbuf[icell];
+      }
+    }
+  }
+
+  // 释放为 random 源分配的临时内存
+  if (random_used) memory->destroy(random_deltas);
+
+  // ==================== 3. 收尾阶段 ====================
+
+  // 调度下一次 compute 调用
+  modify->addstep_compute(update->ntimestep + nevery);
+
+  // 计算总烧蚀量用于输出
+  double sum = 0.0;
+  for (int icell = 0; icell < nglocal; icell++) {
+    if (!(cinfo[icell].mask & groupbit) || cells[icell].nsplit <= 0) continue;
+    sum += celldelta[icell];
+  }
+  MPI_Allreduce(&sum, &sum_delta, 1, MPI_DOUBLE, MPI_SUM, world);
 }
 
 /* ----------------------------------------------------------------------

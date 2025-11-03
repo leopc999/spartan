@@ -184,6 +184,41 @@ void CreateISurf::command(int narg, char **arg)
   if (ctype == MULTI) set_multi();
   else set_corners();
 
+  // ==================== 核心修正逻辑开始 ====================
+  // 1. 为 tvalues 数组分配内存
+  int *tvalues;
+  memory->create(tvalues,nglocal,"createisurf:tvalues");
+
+  Grid::ChildCell *cells = grid->cells;
+  Grid::ChildInfo *cinfo = grid->cinfo;
+
+  // 2. 遍历所有网格单元，根据其内部的显式表面来生成正确的 tvalue
+  for (int icell = 0; icell < nglocal; icell++) {
+    tvalues[icell] = 1; // 默认类型为 1 (代表空单元或无特定类型)
+
+    if (!(cinfo[icell].mask & groupbit) || cells[icell].nsplit <= 0) continue;
+
+    int nsurf_in_cell = cells[icell].nsurf;
+    if (nsurf_in_cell == 0) continue;
+
+    int max_type = 0; // 初始化为0
+    bool found_surf = false;
+
+    // 遍历单元内的所有显式表面 (tris)
+    for (int j = 0; j < nsurf_in_cell; j++) {
+      int isurf = cells[icell].csurfs[j];
+      // 读取显式表面的 type 属性，并找出最大值
+      max_type = MAX(max_type, surf->tris[isurf].type);
+      found_surf = true;
+    }
+
+    // 如果找到了表面，就将最大的 type 值作为这个单元格的 tvalue
+    if (found_surf) {
+      tvalues[icell] = max_type;
+    }
+  }
+  // ==================== 核心修正逻辑结束 ====================
+
   // remove all explicit surfs
 
   remove_old();
@@ -197,11 +232,13 @@ void CreateISurf::command(int narg, char **arg)
   // this call will also create implicit surfs
   // set pushflag = 0 so averaging option is not overridden
 
-  tvalues = NULL;
+  // 将正确生成的 cvalues 和 tvalues 传递给 fix ablate
   int pushflag = 0;
   char *sgroupID = NULL;
   ablate->store_corners(nxyz[0],nxyz[1],nxyz[2],corner,xyzsize,cvalues,
                         mulvalues,tvalues,thresh,sgroupID,pushflag);
+  // 传递完毕后，释放局部 tvalues 数组的内存
+  memory->destroy(tvalues);
 
   if (ablate->nevery == 0) modify->delete_fix(ablateID);
 

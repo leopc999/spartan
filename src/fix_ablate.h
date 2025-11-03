@@ -113,10 +113,37 @@ class FixAblate : public Fix {
   class MarchingCubes *mc;
   class RanKnuth *random;
 
+  // add new variables for local ablate area control (map keyword)
+  // 新增变量，用于存储映射信息
+  int nmap;                         // 映射条目的数量
+
+  // 从脚本读取的原始信息
+  int *map_isc_id;                // 存储 isc ID
+  int *map_isr_id;                // 存储 isr ID
+  char **map_source_str;          // 存储 Source 字符串
+
+  // 在 init() 中解析后的内部数据
+  int *map_group_bit;             // 存储 Group 的位掩码
+  int *map_isc_idx;               // 存储 isc 的索引
+  int *map_isr_idx;               // 存储 isr 的索引
+  int *map_source_which;          // 存储 Source 的类型
+  char **map_source_idsource;     // 存储 Source 的ID部分
+  int *map_source_argindex;       // 存储 Source 的索引部分
+  int *map_source_maxrandom;      // 存储 Source 的maxrandom部分
+  void **map_source_ptr;          // 存储指向Compute/Fix对象的指针
+  int *map_source_ivariable;      // 存储Variable的索引
+  // ==========================================================
+
+  // 辅助函数，用于解析单个源项字符串
+  int parse_source_string(int narg, char **arg, int &which, char *&idsource,
+                          int &argindex, int &maxrandom);
+  void correct_tvalues_by_group();
+
   void process_args(int, char **);
 
   void create_surfs(int);
 
+  void set_delta_mapped();
   void set_delta();
   void set_delta_random();
   void set_delta_uniform();
