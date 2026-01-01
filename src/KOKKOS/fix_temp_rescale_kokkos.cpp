@@ -1,6 +1,6 @@
 /* ----------------------------------------------------------------------
    SPARTA - Stochastic PArallel Rarefied-gas Time-accurate Analyzer
-   http://sparta.sandia.gov
+   http://sparta.github.io
    Steve Plimpton, sjplimp@gmail.com, Michael Gallis, magalli@sandia.gov
    Sandia National Laboratories
 
@@ -45,8 +45,8 @@ void FixTempRescaleKokkos::end_of_step_no_average(double t_target_in)
 
   ParticleKokkos* particle_kk = (ParticleKokkos*) particle;
   particle_kk->sync(Device,PARTICLE_MASK|SPECIES_MASK);
-  d_particles = particle_kk->k_particles.d_view;
-  d_species = particle_kk->k_species.d_view;
+  d_particles = particle_kk->k_particles.view_device();
+  d_species = particle_kk->k_species.view_device();
 
   GridKokkos* grid_kk = (GridKokkos*) grid;
   d_cellcount = grid_kk->d_cellcount;
@@ -60,7 +60,7 @@ void FixTempRescaleKokkos::end_of_step_no_average(double t_target_in)
 
   copymode = 0;
 
-  d_plist = decltype(d_plist)();
+  d_plist = {};
 }
 
 /* ---------------------------------------------------------------------- */
@@ -142,13 +142,13 @@ void FixTempRescaleKokkos::end_of_step_average(double t_target_in)
 
   ParticleKokkos* particle_kk = (ParticleKokkos*) particle;
   particle_kk->sync(Device,PARTICLE_MASK|SPECIES_MASK);
-  d_particles = particle_kk->k_particles.d_view;
-  d_species = particle_kk->k_species.d_view;
+  d_particles = particle_kk->k_particles.view_device();
+  d_species = particle_kk->k_species.view_device();
 
   GridKokkos* grid_kk = (GridKokkos*) grid;
   d_cellcount = grid_kk->d_cellcount;
   d_plist = grid_kk->d_plist;
-  d_cells = grid_kk->k_cells.d_view;
+  d_cells = grid_kk->k_cells.view_device();
   grid_kk->sync(Device,CELL_MASK);
 
   int nglocal = grid->nlocal;
@@ -194,7 +194,7 @@ void FixTempRescaleKokkos::end_of_step_average(double t_target_in)
   Kokkos::parallel_for(Kokkos::RangePolicy<DeviceType, TagFixTempRescale_end_of_step_average2>(0,nglocal),*this);
 
   copymode = 0;
-  d_plist = decltype(d_plist)();
+  d_plist = {};
 }
 
 /* ---------------------------------------------------------------------- */

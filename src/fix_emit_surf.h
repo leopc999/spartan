@@ -1,6 +1,6 @@
 /* ----------------------------------------------------------------------
    SPARTA - Stochastic PArallel Rarefied-gas Time-accurate Analyzer
-   http://sparta.sandia.gov
+   http://sparta.github.io
    Steve Plimpton, sjplimp@gmail.com, Michael Gallis, magalli@sandia.gov
    Sandia National Laboratories
 
@@ -33,11 +33,37 @@ class FixEmitSurf : public FixEmit {
   ~FixEmitSurf();
   void init();
 
-  void grid_changed();
+  void grid_changed() override;
+  void custom_surf_changed();
 
- private:
+  struct Task {
+    double area;                // area of overlap of surf with cell
+    double ntarget;             // # of mols to insert for all species
+    double tan1[3],tan2[3];     // 2 normalized tangent vectors to surf normal
+    double nrho;                // from mixture or adjacent subsonic cell
+    double temp_thermal;        // from mixture or adjacent subsonic cell
+    double temp_rot;            // from mixture or subsonic temp_thermal
+    double temp_vib;            // from mixture or subsonic temp_thermal
+    double magvstream;          // from mixture
+    double vstream[3];          // from mixture or adjacent subsonic cell
+    double *ntargetsp;          // # of mols to insert for each species,
+                                //   only defined for PERSPECIES
+    double *vscale;             // vscale for each species,
+                                //   only defined for subsonic_style PONLY
+
+    double *path;               // path of points for overlap of surf with cell
+    double *fracarea;           // fractional area for each sub tri in path
+
+    int icell;                  // associated cell index, unsplit or split cell
+    surfint isurf;              // surf index, sometimes a surf ID
+    int pcell;                  // associated cell index for particles
+                                // unsplit or sub cell (not split cell)
+    int npoint;                 // # of points in path
+  };
+
+ protected:
   int imix,groupbit,normalflag,subsonic,subsonic_style,subsonic_warning;
-  int npertask,nthresh;
+  int npertask,nthresh,twopass,max_npoint;
   double psubsonic,tsubsonic,nsubsonic;
   double tprefactor,soundspeed_mixture;
 
@@ -57,30 +83,6 @@ class FixEmitSurf : public FixEmit {
 
   // one insertion task for a cell and a surf
 
-  struct Task {
-    double area;                // area of overlap of surf with cell
-    double ntarget;             // # of mols to insert for all species
-    double tan1[3],tan2[3];     // 2 normalized tangent vectors to surf normal
-    double nrho;                // from mixture or adjacent subsonic cell
-    double temp_thermal;        // from mixture or adjacent subsonic cell
-    double temp_rot;            // from mixture or subsonic temp_thermal
-    double temp_vib;            // from mixture or subsonic temp_thermal
-    double vstream[3];          // from mixture or adjacent subsonic cell
-    double *ntargetsp;          // # of mols to insert for each species,
-                                //   only defined for PERSPECIES
-    double *vscale;             // vscale for each species,
-                                //   only defined for subsonic_style PONLY
-
-    double *path;               // path of points for overlap of surf with cell
-    double *fracarea;           // fractional area for each sub tri in path
-
-    int icell;                  // associated cell index, unsplit or split cell
-    surfint isurf;              // surf index, sometimes a surf ID
-    int pcell;                  // associated cell index for particles
-                                // unsplit or sub cell (not split cell)
-    int npoint;                 // # of points in path
-  };
-
                          // ntask = # of tasks is stored by parent class
   Task *tasks;           // list of particle insertion tasks
   int ntaskmax;          // max # of tasks allocated
@@ -88,21 +90,35 @@ class FixEmitSurf : public FixEmit {
   double magvstream;       // magnitude of mixture vstream
   double norm_vstream[3];  // direction of mixture vstream
 
+  // custom options for per-surf emission properties
+
+  int nrho_custom_flag,vstream_custom_flag,speed_custom_flag,temp_custom_flag,fractions_custom_flag;
+  char *nrho_custom_id,*vstream_custom_id,*speed_custom_id,*temp_custom_id,*fractions_custom_id;
+  int nrho_custom_index,vstream_custom_index,speed_custom_index,temp_custom_index,fractions_custom_index;
+  double *nrho_custom,*speed_custom,*temp_custom;
+  double **vstream_custom,**fractions_custom;
+
+  int max_cummulative;
+  double **cummulative_custom;     // local to this fix, not actually custom data
+
   // active grid cells assigned to tasks, used by subsonic sorting
 
   int maxactive;
   int *activecell;
 
-  // private methods
+  // protected methods
 
-  void create_task(int);
-  void perform_task();
-  void grow_task();
+  virtual void create_task(int);
+  virtual void perform_task();
+  void perform_task_onepass();
+  virtual void perform_task_twopass();
+  virtual void grow_task();
 
   void subsonic_inflow();
   void subsonic_sort();
   void subsonic_grid();
 
+  virtual void realloc_nspecies();
   int option(int, char **);
 };
 

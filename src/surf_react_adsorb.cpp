@@ -1,6 +1,6 @@
 /* ----------------------------------------------------------------------
    SPARTA - Stochastic PArallel Rarefied-gas Time-accurate Analyzer
-   http://sparta.sandia.gov
+   http://sparta.github.io
    Steve Plimpton, sjplimp@gmail.com, Michael Gallis, magalli@sandia.gov
    Sandia National Laboratories
 
@@ -317,11 +317,11 @@ SurfReactAdsorb::~SurfReactAdsorb()
   }
 
   // delete custom per-surf state data owned by Surf class
-  // this must be done exactly once by first_owner
+  // this must be done exactly once
   // in case multiple surf react/adsorb instances are used
 
-  if (mode == SURF && first_owner) {
-    total_state_index = surf->find_custom((char *) "nstick_total");
+  total_state_index = surf->find_custom((char *) "nstick_total");
+  if (mode == SURF && total_state_index != -1) {
     surf->remove_custom(total_state_index);
     species_state_index = surf->find_custom((char *) "nstick_species");
     surf->remove_custom(species_state_index);
@@ -448,14 +448,6 @@ void SurfReactAdsorb::create_per_surf_state()
   } else if (flag < 0)
     error->all(FLERR,"Surf react/adsorb custom attribute(s) already exist");
 
-  // set first_owner = 1 if this is first instance of SRA, else 0
-  // at this point (constructor), this instance of SRA does not yet exist
-  // first_owner enables exactly one deletion of custom attributes in destructor
-
-  first_owner = 1;
-  for (int i = 0; i < surf->nsr; i++)
-    if (strcmp(surf->sr[i]->style,"react/adsorb") == 0) first_owner = 0;
-
   // allocate and intialize surf_species_delta
   // stores changes in each nlocal+nghost surf due to reactions
 
@@ -551,7 +543,7 @@ void SurfReactAdsorb::init()
       int m = 0;
       for (int isurf = me; isurf < nslocal; isurf += nprocs) {
 	isr = lines[isurf].isr;
-	if (surf->sr[isr] != this) return;
+	if (surf->sr[isr] != this) continue;
 	area[m] = surf->line_size(&lines[isurf]);
 	weight[m] = 1.0;
 	m++;
@@ -561,7 +553,7 @@ void SurfReactAdsorb::init()
       int m = 0;
       for (int isurf = me; isurf < nslocal; isurf += nprocs) {
 	isr = tris[isurf].isr;
-	if (surf->sr[isr] != this) return;
+	if (surf->sr[isr] != this) continue;
 	area[m] = surf->tri_size(&tris[isurf],tmp);
 	weight[m] = 1.0;
 	m++;
@@ -572,7 +564,7 @@ void SurfReactAdsorb::init()
     if (domain->dimension == 2) {
       for (int isurf = 0; isurf < nsown; isurf++) {
 	isr = mylines[isurf].isr;
-	if (surf->sr[isr] != this) return;
+	if (surf->sr[isr] != this) continue;
 	area[isurf] = surf->line_size(&mylines[isurf]);
 	weight[isurf] = 1.0;
       }
@@ -580,7 +572,7 @@ void SurfReactAdsorb::init()
       double tmp;
       for (int isurf = 0; isurf < nsown; isurf++) {
 	isr = mytris[isurf].isr;
-	if (surf->sr[isr] != this) return;
+	if (surf->sr[isr] != this) continue;
 	area[isurf] = surf->tri_size(&mytris[isurf],tmp);
 	weight[isurf] = 1.0;
       }
@@ -2618,7 +2610,7 @@ void SurfReactAdsorb::readfile_ps(char *fname)
             if (r->state_products[i][0] == 'g')
               {
                 print_reaction(copy1,copy2);
-                error->all(FLERR,"Fas phase species must be "
+                error->all(FLERR,"Gas phase species must be "
                            "first product in DS reaction");
               }
           }
@@ -2945,15 +2937,17 @@ void SurfReactAdsorb::PS_react(int isurf, int isc, double *norm)
         //int react_num = r->index;
 
         // if computes which tally on-surface reactions exist:
-        //    invoke them here so can be tallied on a per-surf basis
-        //    Update::run() does same thing for gas/surf reactions
+        //   invoke them here so can be tallied on a per-surf basis
+        //   Update::run() does same thing for gas/surf reactions
+        // pass 1st arg = 0.0 to surf_tally() since on-surf reactions
+        //   are at the end of the current timestep
 
         nsingle++;
         ireaction = nlist_gs + reactions_ps_list[i];
         tally_single[ireaction]++;
         if (ncompute_tally)
           for (m = 0; m < ncompute_tally; m++)
-            clist_active[m]->surf_tally(isurf,-1,ireaction,NULL,NULL,NULL);
+            clist_active[m]->surf_tally(0.0,isurf,-1,ireaction,NULL,NULL,NULL);
 
         // update tau
 

@@ -1,6 +1,6 @@
 /* ----------------------------------------------------------------------
    SPARTA - Stochastic PArallel Rarefied-gas Time-accurate Analyzer
-   http://sparta.sandia.gov
+   http://sparta.github.io
    Steve Plimpton, sjplimp@gmail.com, Michael Gallis, magalli@sandia.gov
    Sandia National Laboratories
 
@@ -67,6 +67,9 @@ class FixEmitFace : public FixEmit {
   int npertask,nthresh,twopass;
   double psubsonic,tsubsonic,nsubsonic;
   double tprefactor,soundspeed_mixture;
+
+  int imodvar;
+  char *modvar;
 
   // copies of data from other classes
 
