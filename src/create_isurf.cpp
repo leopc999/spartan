@@ -184,40 +184,40 @@ void CreateISurf::command(int narg, char **arg)
   if (ctype == MULTI) set_multi();
   else set_corners();
 
-  // ==================== 核心修正逻辑开始 ====================
-  // 1. 为 tvalues 数组分配内存
+  // ==================== Core Correction Logic Begins ====================
+  // 1. Allocate memory for the tvalues array
   int *tvalues;
   memory->create(tvalues,nglocal,"createisurf:tvalues");
 
   Grid::ChildCell *cells = grid->cells;
   Grid::ChildInfo *cinfo = grid->cinfo;
 
-  // 2. 遍历所有网格单元，根据其内部的显式表面来生成正确的 tvalue
+  // 2. Iterate through all grid cells and generate the correct tvalue based on the explicit surfaces contained within them
   for (int icell = 0; icell < nglocal; icell++) {
-    tvalues[icell] = 1; // 默认类型为 1 (代表空单元或无特定类型)
+    tvalues[icell] = 1; // Default type is 1 (representing an empty cell or no specific type)
 
     if (!(cinfo[icell].mask & groupbit) || cells[icell].nsplit <= 0) continue;
 
     int nsurf_in_cell = cells[icell].nsurf;
     if (nsurf_in_cell == 0) continue;
 
-    int max_type = 0; // 初始化为0
+    int max_type = 0; // Initialize to 0
     bool found_surf = false;
 
-    // 遍历单元内的所有显式表面 (tris)
+    // Iterate through all explicit surfaces (tris) within the cell
     for (int j = 0; j < nsurf_in_cell; j++) {
       int isurf = cells[icell].csurfs[j];
-      // 读取显式表面的 type 属性，并找出最大值
+      // Read the type attribute of the explicit surface and find the maximum value
       max_type = MAX(max_type, surf->tris[isurf].type);
       found_surf = true;
     }
 
-    // 如果找到了表面，就将最大的 type 值作为这个单元格的 tvalue
+    // If a surface is found, use the maximum type value as the tvalue for this cell
     if (found_surf) {
       tvalues[icell] = max_type;
     }
   }
-  // ==================== 核心修正逻辑结束 ====================
+  // ==================== Core Correction Logic Ends ====================
 
   // remove all explicit surfs
 

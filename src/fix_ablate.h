@@ -114,27 +114,27 @@ class FixAblate : public Fix {
   class RanKnuth *random;
 
   // add new variables for local ablate area control (map keyword)
-  // 新增变量，用于存储映射信息
-  int nmap;                         // 映射条目的数量
+  // Newly added variables for storing mapping information
+  int nmap;                         // Number of mapping entries
 
-  // 从脚本读取的原始信息
-  int *map_isc_id;                // 存储 isc ID
-  int *map_isr_id;                // 存储 isr ID
-  char **map_source_str;          // 存储 Source 字符串
+  // Raw information read from the script
+  int *map_isc_id;                // Stores isc ID
+  int *map_isr_id;                // Stores isr ID
+  char **map_source_str;          // Stores Source string
 
-  // 在 init() 中解析后的内部数据
-  int *map_group_bit;             // 存储 Group 的位掩码
-  int *map_isc_idx;               // 存储 isc 的索引
-  int *map_isr_idx;               // 存储 isr 的索引
-  int *map_source_which;          // 存储 Source 的类型
-  char **map_source_idsource;     // 存储 Source 的ID部分
-  int *map_source_argindex;       // 存储 Source 的索引部分
-  int *map_source_maxrandom;      // 存储 Source 的maxrandom部分
-  void **map_source_ptr;          // 存储指向Compute/Fix对象的指针
-  int *map_source_ivariable;      // 存储Variable的索引
+  // Internal data parsed in init()
+  int *map_group_bit;             // Stores Group bitmask
+  int *map_isc_idx;               // Stores isc index
+  int *map_isr_idx;               // Stores isr index
+  int *map_source_which;          // Stores Source type
+  char **map_source_idsource;     // Stores Source ID part
+  int *map_source_argindex;       // Stores Source index part
+  int *map_source_maxrandom;      // Stores Source maxrandom part
+  void **map_source_ptr;          // Stores pointers to Compute/Fix objects
+  int *map_source_ivariable;      // Stores Variable index
   // ==========================================================
 
-  // 辅助函数，用于解析单个源项字符串
+  // Helper function for parsing a single source item string
   int parse_source_string(int narg, char **arg, int &which, char *&idsource,
                           int &argindex, int &maxrandom);
   void correct_tvalues_by_group();
